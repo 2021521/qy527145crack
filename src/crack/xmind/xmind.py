@@ -58,18 +58,23 @@ class XmindKeyGen(KeyGen):
                 "Make sure XMind is installed and the path is correct."
             )
         try:
-            # 始终从原始 app.asar 解包，保证可重复运行（避免二次 patch）
-            # 首次运行时把原始文件备份为 .bak，之后都以 .bak 作为解包源
-            if not self.asar_file_bak.is_file():
+            # 保证每次都从原始（未 patch）的 app.asar 解包：
+            #  - 首次运行：备份原始文件为 app.asar.bak
+            #  - 之后运行：先用 .bak 还原 app.asar，实现幂等，并能从上次损坏中恢复
+            # 注意：必须从 app.asar 本身解包，asarPy 依赖同名的
+            #      app.asar.unpacked 目录来复制未打包文件（node_modules 等），
+            #      若从 .bak 解包会找不到 .unpacked 而丢失这些文件、损坏 XMind。
+            if self.asar_file_bak.is_file():
+                shutil.copy2(self.asar_file_bak, self.asar_file)
+            else:
                 shutil.copy2(self.asar_file, self.asar_file_bak)
-            source_asar = self.asar_file_bak
 
             # 清理上次失败运行残留的解包目录
             if self.crack_asar_dir.exists():
                 shutil.rmtree(self.crack_asar_dir)
 
             # 解包
-            extract_asar(str(source_asar), str(self.crack_asar_dir))
+            extract_asar(str(self.asar_file), str(self.crack_asar_dir))
             shutil.copytree(str(self.crack_dir), self.main_dir, dirs_exist_ok=True)
             # 注入
             with open(self.main_dir.joinpath("main.js"), "rb") as f:
