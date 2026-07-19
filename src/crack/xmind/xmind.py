@@ -52,14 +52,24 @@ class XmindKeyGen(KeyGen):
         return self.crypto_plus.decrypt_by_public_key(b64encode(licenses))
 
     def patch(self):
-        if not self.asar_file.is_file():
+        if not self.asar_file.is_file() and not self.asar_file_bak.is_file():
             raise PatchError(
                 f"XMind app.asar not found at {self.asar_file}. "
                 "Make sure XMind is installed and the path is correct."
             )
         try:
+            # 始终从原始 app.asar 解包，保证可重复运行（避免二次 patch）
+            # 首次运行时把原始文件备份为 .bak，之后都以 .bak 作为解包源
+            if not self.asar_file_bak.is_file():
+                shutil.copy2(self.asar_file, self.asar_file_bak)
+            source_asar = self.asar_file_bak
+
+            # 清理上次失败运行残留的解包目录
+            if self.crack_asar_dir.exists():
+                shutil.rmtree(self.crack_asar_dir)
+
             # 解包
-            extract_asar(str(self.asar_file), str(self.crack_asar_dir))
+            extract_asar(str(source_asar), str(self.crack_asar_dir))
             shutil.copytree(str(self.crack_dir), self.main_dir, dirs_exist_ok=True)
             # 注入
             with open(self.main_dir.joinpath("main.js"), "rb") as f:
@@ -108,14 +118,20 @@ class XmindKeyGen(KeyGen):
                 encoding="u8",
             ) as f:
                 f.write(content)
-            # 封包
-            os.remove(self.asar_file)
-            pack_asar(self.crack_asar_dir, self.asar_file)
+            # 封包（写回 app.asar）
+            if self.asar_file.is_file():
+                os.remove(self.asar_file)
+            pack_asar(str(self.crack_asar_dir), str(self.asar_file))
             shutil.rmtree(self.crack_asar_dir)
         except PatchError:
             raise
         except Exception as e:
-            raise PatchError(f"Failed to patch XMind: {e}") from e
+            # 若过程中删除了 app.asar 但未成功封包，用备份还原，避免损坏 XMind
+            if not self.asar_file.is_file() and self.asar_file_bak.is_file():
+                shutil.copy2(self.asar_file_bak, self.asar_file)
+            raise PatchError(
+                f"Failed to patch XMind: {type(e).__name__}: {e}"
+            ) from e
 
 
 if __name__ == "__main__":
