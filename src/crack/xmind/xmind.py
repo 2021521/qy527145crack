@@ -128,6 +128,10 @@ class XmindKeyGen(KeyGen):
                 os.remove(self.asar_file)
             pack_asar(str(self.crack_asar_dir), str(self.asar_file))
             shutil.rmtree(self.crack_asar_dir)
+            return (
+                f"XMind patched successfully: {self.asar_file}\n"
+                f"Original backed up at: {self.asar_file_bak}"
+            )
         except PatchError:
             raise
         except Exception as e:
