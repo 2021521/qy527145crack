@@ -16,6 +16,9 @@ class XmindKeyGen(KeyGen):
         module_dir = pathlib.Path(__file__).parent
         key_path = module_dir / "key.pem"
         old_key_path = module_dir / "old.pem"
+        # Directory containing the hook scripts to inject (resolved relative to
+        # this module, not the current working directory)
+        self.crack_dir = module_dir / "crack"
 
         if key_path.is_file():
             rsa = CryptoPlus.load(str(key_path))
@@ -57,7 +60,7 @@ class XmindKeyGen(KeyGen):
         try:
             # 解包
             extract_asar(str(self.asar_file), str(self.crack_asar_dir))
-            shutil.copytree("crack", self.main_dir, dirs_exist_ok=True)
+            shutil.copytree(str(self.crack_dir), self.main_dir, dirs_exist_ok=True)
             # 注入
             with open(self.main_dir.joinpath("main.js"), "rb") as f:
                 lines = f.readlines()
