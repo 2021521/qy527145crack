@@ -69,6 +69,7 @@ class License:
 
 class DBeaverKeyGen(KeyGen):
     def __init__(self):
+        super().__init__()
         try:
             obj = CryptoPlus.load()
         except Exception:  # noqa

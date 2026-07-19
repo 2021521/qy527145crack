@@ -6,15 +6,19 @@ from base64 import b64encode
 from asarPy import extract_asar, pack_asar
 from crypto_plus import CryptoPlus
 
-from crack.base import KeyGen
+from crack.base import KeyGen, PatchError
 
 
 class XmindKeyGen(KeyGen):
     def __init__(self):
+        super().__init__()
         # Get the module directory for storing keys
         module_dir = pathlib.Path(__file__).parent
         key_path = module_dir / "key.pem"
         old_key_path = module_dir / "old.pem"
+        # Directory containing the hook scripts to inject (resolved relative to
+        # this module, not the current working directory)
+        self.crack_dir = module_dir / "crack"
 
         if key_path.is_file():
             rsa = CryptoPlus.load(str(key_path))
@@ -48,53 +52,95 @@ class XmindKeyGen(KeyGen):
         return self.crypto_plus.decrypt_by_public_key(b64encode(licenses))
 
     def patch(self):
-        # 解包
-        extract_asar(str(self.asar_file), str(self.crack_asar_dir))
-        shutil.copytree("crack", self.main_dir, dirs_exist_ok=True)
-        # 注入
-        with open(self.main_dir.joinpath("main.js"), "rb") as f:
-            lines = f.readlines()
-            lines[5] = b'require("./hook")\n'
-        with open(self.main_dir.joinpath("main.js"), "wb") as f:
-            f.writelines(lines)
-        # 替换密钥
-        old_key = f"String.fromCharCode({','.join([str(i) for i in self.old_public_key.encode()])})".encode()
-        new_key = f"String.fromCharCode({','.join([str(i) for i in self.crypto_plus.public_key.export_key()])})".encode()
-        for js_file in self.renderer_dir.rglob("*.js"):
-            with open(js_file, "rb") as f:
-                byte_str = f.read()
-                index = byte_str.find(old_key)
-                if index != -1:
-                    byte_str.replace(old_key, new_key)
+        if not self.asar_file.is_file() and not self.asar_file_bak.is_file():
+            raise PatchError(
+                f"XMind app.asar not found at {self.asar_file}. "
+                "Make sure XMind is installed and the path is correct."
+            )
+        try:
+            # 保证每次都从原始（未 patch）的 app.asar 解包：
+            #  - 首次运行：备份原始文件为 app.asar.bak
+            #  - 之后运行：先用 .bak 还原 app.asar，实现幂等，并能从上次损坏中恢复
+            # 注意：必须从 app.asar 本身解包，asarPy 依赖同名的
+            #      app.asar.unpacked 目录来复制未打包文件（node_modules 等），
+            #      若从 .bak 解包会找不到 .unpacked 而丢失这些文件、损坏 XMind。
+            if self.asar_file_bak.is_file():
+                shutil.copy2(self.asar_file_bak, self.asar_file)
+            else:
+                shutil.copy2(self.asar_file, self.asar_file_bak)
+
+            # 清理上次失败运行残留的解包目录
+            if self.crack_asar_dir.exists():
+                shutil.rmtree(self.crack_asar_dir)
+
+            # 解包
+            extract_asar(str(self.asar_file), str(self.crack_asar_dir))
+            shutil.copytree(str(self.crack_dir), self.main_dir, dirs_exist_ok=True)
+            # 注入
+            with open(self.main_dir.joinpath("main.js"), "rb") as f:
+                lines = f.readlines()
+                lines[5] = b'require("./hook")\n'
+            with open(self.main_dir.joinpath("main.js"), "wb") as f:
+                f.writelines(lines)
+            # 替换密钥
+            old_key = f"String.fromCharCode({','.join([str(i) for i in self.old_public_key.encode()])})".encode()
+            new_key = f"String.fromCharCode({','.join([str(i) for i in self.crypto_plus.public_key.export_key()])})".encode()
+            for js_file in self.renderer_dir.rglob("*.js"):
+                with open(js_file, "rb") as f:
+                    byte_str = f.read()
+                if byte_str.find(old_key) != -1:
+                    byte_str = byte_str.replace(old_key, new_key)
                     with open(js_file, "wb") as _f:
-                        _f.write(byte_str.replace(old_key, new_key))
+                        _f.write(byte_str)
                     print(js_file)
                     break
-        # 占位符填充
-        with open(self.main_dir.joinpath("hook.js"), "r", encoding="u8") as f:
-            content = f.read()
-            content = content.replace("{{license_data}}", self.license_data.decode())
-        with open(self.main_dir.joinpath("hook.js"), "w", encoding="u8") as f:
-            f.write(content)
-        with open(
-            self.main_dir.joinpath("hook").joinpath("crypto.js"), "r", encoding="u8"
-        ) as f:
-            content = f.read()
-            content = content.replace(
-                "{{old_public_key}}", self.old_public_key.replace("\n", "\\n")
+            # 占位符填充
+            with open(self.main_dir.joinpath("hook.js"), "r", encoding="u8") as f:
+                content = f.read()
+                content = content.replace(
+                    "{{license_data}}", self.license_data.decode()
+                )
+            with open(self.main_dir.joinpath("hook.js"), "w", encoding="u8") as f:
+                f.write(content)
+            with open(
+                self.main_dir.joinpath("hook").joinpath("crypto.js"),
+                "r",
+                encoding="u8",
+            ) as f:
+                content = f.read()
+                content = content.replace(
+                    "{{old_public_key}}", self.old_public_key.replace("\n", "\\n")
+                )
+                content = content.replace(
+                    "{{new_public_key}}",
+                    self.crypto_plus.public_key.export_key()
+                    .decode()
+                    .replace("\n", "\\n"),
+                )
+            with open(
+                self.main_dir.joinpath("hook").joinpath("crypto.js"),
+                "w",
+                encoding="u8",
+            ) as f:
+                f.write(content)
+            # 封包（写回 app.asar）
+            if self.asar_file.is_file():
+                os.remove(self.asar_file)
+            pack_asar(str(self.crack_asar_dir), str(self.asar_file))
+            shutil.rmtree(self.crack_asar_dir)
+            return (
+                f"XMind patched successfully: {self.asar_file}\n"
+                f"Original backed up at: {self.asar_file_bak}"
             )
-            content = content.replace(
-                "{{new_public_key}}",
-                self.crypto_plus.public_key.export_key().decode().replace("\n", "\\n"),
-            )
-        with open(
-            self.main_dir.joinpath("hook").joinpath("crypto.js"), "w", encoding="u8"
-        ) as f:
-            f.write(content)
-        # 封包
-        os.remove(self.asar_file)
-        pack_asar(self.crack_asar_dir, self.asar_file)
-        shutil.rmtree(self.crack_asar_dir)
+        except PatchError:
+            raise
+        except Exception as e:
+            # 若过程中删除了 app.asar 但未成功封包，用备份还原，避免损坏 XMind
+            if not self.asar_file.is_file() and self.asar_file_bak.is_file():
+                shutil.copy2(self.asar_file_bak, self.asar_file)
+            raise PatchError(
+                f"Failed to patch XMind: {type(e).__name__}: {e}"
+            ) from e
 
 
 if __name__ == "__main__":

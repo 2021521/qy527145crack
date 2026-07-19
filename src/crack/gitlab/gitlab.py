@@ -28,6 +28,7 @@ template_license_data = {
 
 class GitlabKeyGen(KeyGen):
     def __init__(self):
+        super().__init__()
         self.license_data = template_license_data
         try:
             rsa = CryptoPlus.load()

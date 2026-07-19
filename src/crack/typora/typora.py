@@ -13,6 +13,7 @@ aes_key = bytes.fromhex(
 
 class TyporaKeyGen(KeyGen):
     def __init__(self):
+        super().__init__()
         # Try to find Typora installation path
         typora_path = os.environ.get("TYPORA_PATH")
         if not typora_path:
